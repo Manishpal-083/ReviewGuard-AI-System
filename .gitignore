@@ -1,0 +1,25 @@
+# Virtual Environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Raw data (HUGE FILES)
+app_src/data/raw/
+
+# Logs
+*.log
+
+# Streamlit cache
+.streamlit/
+
+# Ignore ALL models except trained ones
+app_src/models/*
+!app_src/models/sentiment_model/
+!app_src/models/fake_review_model.pkl
+!app_src/models/fake_vectorizer.pkl
+
+# Ignore checkpoints
+*.bin
+*.pt
