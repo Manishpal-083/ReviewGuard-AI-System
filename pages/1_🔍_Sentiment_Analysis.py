@@ -1,28 +1,32 @@
 import streamlit as st
-import pytesseract
 from PIL import Image
-from pdf2image import convert_from_bytes
-from transformers import DistilBertForSequenceClassification, DistilBertTokenizerFast
+from transformers import (
+    DistilBertForSequenceClassification,
+    DistilBertTokenizerFast,
+    TrOCRProcessor,
+    VisionEncoderDecoderModel,
+)
 import torch
-import os
+import fitz  # PyMuPDF for PDF text extraction
 
-st.title("🔍 Sentiment Analysis")
-st.write("Select an input method below to analyze sentiment.")
+st.title("🔍 Sentiment Analysis ")
+st.write("Analyze sentiment from text, PDF, image, or camera input.")
 
-# ----------------------------------------
-# LOAD MODEL (FALLBACK IF LOCAL MODEL MISSING)
-# ----------------------------------------
+# -----------------------------
+# LOAD SENTIMENT MODEL
+# -----------------------------
 @st.cache_resource
-def load_model():
-    local_path = "app_src/models/sentiment_model"
-    weight_file = os.path.join(local_path, "pytorch_model.bin")
-
-    if os.path.exists(weight_file):
-        st.info("Loading local fine-tuned model...")
-        model = DistilBertForSequenceClassification.from_pretrained(local_path)
-        tokenizer = DistilBertTokenizerFast.from_pretrained(local_path)
-    else:
-        st.warning("Local model weights missing. Using pretrained SST-2 model instead.")
+def load_sentiment_model():
+    try:
+        # Try loading local model
+        model = DistilBertForSequenceClassification.from_pretrained(
+            "app_src/models/sentiment_model"
+        )
+        tokenizer = DistilBertTokenizerFast.from_pretrained(
+            "app_src/models/sentiment_model"
+        )
+    except:
+        st.warning("Local model not found. Using pretrained SST-2 model.")
         model = DistilBertForSequenceClassification.from_pretrained(
             "distilbert-base-uncased-finetuned-sst-2-english"
         )
@@ -31,24 +35,46 @@ def load_model():
         )
     return model, tokenizer
 
-model, tokenizer = load_model()
 
-# ----------------------------------------
+model, tokenizer = load_sentiment_model()
+
+# -----------------------------
+# LOAD TROCŔ OCR MODEL
+# -----------------------------
+@st.cache_resource
+def load_ocr_model():
+    processor = TrOCRProcessor.from_pretrained("microsoft/trocr-small-handwritten")
+    ocr_model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-small-handwritten")
+    return processor, ocr_model
+
+
+processor, ocr_model = load_ocr_model()
+
+
+# -----------------------------
 # OCR FUNCTIONS
-# ----------------------------------------
-def extract_from_pdf(pdf):
-    pages = convert_from_bytes(pdf.read())
+# -----------------------------
+def extract_text_from_pdf(pdf_file):
+    """Extract text from PDF using PyMuPDF (Cloud compatible)."""
     text = ""
-    for pg in pages:
-        text += pytesseract.image_to_string(pg)
+    with fitz.open(stream=pdf_file.read(), filetype="pdf") as doc:
+        for page in doc:
+            text += page.get_text()
     return text
 
-def extract_from_image(img):
-    return pytesseract.image_to_string(Image.open(img))
 
-# ----------------------------------------
-# INPUT TYPE
-# ----------------------------------------
+def extract_text_with_trocr(image):
+    """Extract text from images using HuggingFace TrOCR."""
+    img = Image.open(image).convert("RGB")
+    pixel_values = processor(images=img, return_tensors="pt").pixel_values
+    generated_ids = ocr_model.generate(pixel_values)
+    text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    return text
+
+
+# -----------------------------
+# INPUT SELECTION
+# -----------------------------
 choice = st.radio(
     "Choose Input Type:",
     ["✏ Text", "📄 PDF / 🖼 Image", "📷 Camera"],
@@ -57,53 +83,53 @@ choice = st.radio(
 
 final_text = ""
 
-# ----------------------------------------
-# TEXT INPUT
-# ----------------------------------------
-if choice == "✏ Text":
-    st.subheader("📝 Enter Text")
-    final_text = st.text_area("Write your review here:", height=130)
 
-# ----------------------------------------
-# PDF / IMAGE
-# ----------------------------------------
+# -----------------------------
+# TEXT INPUT
+# -----------------------------
+if choice == "✏ Text":
+    final_text = st.text_area("Enter text:", height=130)
+
+
+# -----------------------------
+# PDF / IMAGE INPUT
+# -----------------------------
 elif choice == "📄 PDF / 🖼 Image":
-    st.subheader("Upload PDF or Image")
     file = st.file_uploader("Upload PDF, PNG, JPG", type=["pdf", "png", "jpg", "jpeg"])
 
     if file:
         if file.type == "application/pdf":
             st.info("Extracting text from PDF...")
-            final_text = extract_from_pdf(file)
+            final_text = extract_text_from_pdf(file)
         else:
-            st.info("Extracting text from Image...")
-            final_text = extract_from_image(file)
+            st.info("Extracting text from Image using AI OCR...")
+            final_text = extract_text_with_trocr(file)
 
         st.success("Text extracted successfully!")
 
-# ----------------------------------------
+
+# -----------------------------
 # CAMERA INPUT
-# ----------------------------------------
+# -----------------------------
 elif choice == "📷 Camera":
-    st.subheader("Capture using Camera")
     cam_img = st.camera_input("Take a picture")
 
     if cam_img:
-        st.info("Extracting text from captured image...")
-        final_text = extract_from_image(cam_img)
+        st.info("Extracting text from camera image...")
+        final_text = extract_text_with_trocr(cam_img)
         st.success("Text extracted successfully!")
 
-# ----------------------------------------
+
+# -----------------------------
 # SENTIMENT PREDICTION
-# ----------------------------------------
+# -----------------------------
 if st.button("Analyze Sentiment"):
     if not final_text.strip():
-        st.error("⚠ No input found. Please provide some text.")
+        st.error("⚠ No input found. Please provide something.")
     else:
         encoded = tokenizer(final_text, return_tensors="pt", truncation=True, padding=True)
         with torch.no_grad():
-            prediction = model(**encoded)
-            pred = torch.argmax(prediction.logits).item()
+            pred = model(**encoded).logits.argmax().item()
 
-        labels = ["Negative 😡", "Positive 😄"]  # SST-2 only has 2 labels
+        labels = ["Negative 😡", "Positive 😄"]
         st.success(f"### Sentiment → **{labels[pred]}**")
